@@ -68,11 +68,16 @@ else:
 # + / =: zoom in (centered on cursor) #
 # -: zoom out                  #
 # 0: reset zoom/pan            #
+# r: cycle window size preset  #
 # # # # # # # # # # # # # # # #
 
 # ---- ズーム関連の設定 ----
 DISPLAY_W, DISPLAY_H = 960, 540  # ウィンドウサイズが取得できない場合のフォールバック値
 ZOOM_LEVELS = [1.0, 1.5, 2.0, 3.0, 4.0]
+# 環境によってはドラッグ/最大化ボタンでのウィンドウリサイズが効かないため、
+# r キーでプログラム側から明示的にウィンドウサイズを切り替えられるようにする
+SIZE_PRESETS = [(960, 540), (1280, 720), (1600, 900), (1920, 1080)]
+size_idx = 0
 zoom_idx = 0
 pan_center = None       # (cx, cy) 元画像座標系。最初のフレーム取得後に初期化
 last_mouse_orig = None  # 直近のマウス位置(元画像座標系)。ズームインの中心に使う
@@ -260,6 +265,12 @@ while True:
         zoom_idx = 0
         pan_center = (_w / 2, _h / 2)
         print("[ズームリセット]")
+
+    elif key == ord('r'):
+        size_idx = (size_idx + 1) % len(SIZE_PRESETS)
+        w_new, h_new = SIZE_PRESETS[size_idx]
+        cv2.resizeWindow('imgLabel', w_new, h_new)
+        print(f"[ウィンドウサイズ] {w_new}x{h_new}")
 
     else:
         image = go2frame(cap, frame_no, info)
