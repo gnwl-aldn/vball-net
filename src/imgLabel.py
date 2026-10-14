@@ -38,6 +38,10 @@ cap = cv2.VideoCapture(video_path)
 fps = int(cap.get(cv2.CAP_PROP_FPS))
 n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+# import pdb
+
+# pdb.set_trace()
+
 if load_csv:
     info = load_info(csv_path)
     if  len(info) != n_frames:
@@ -55,6 +59,7 @@ else:
         idx: {"Frame": idx, "Visibility": 0, "X": -1, "Y": -1}
         for idx in range(n_frames)
     }
+import pdb; pdb.set_trace()
 
 # # # # # # # # # # # # # # # #
 # e: exit program             #
@@ -65,78 +70,10 @@ else:
 # l: to last frame            #
 # >: fast forward 36 frames   #
 # <: fast backward 36 frames  #
-# + / =: zoom in (centered on cursor) #
-# -: zoom out                  #
-# 0: reset zoom/pan            #
-# r: cycle window size preset  #
 # # # # # # # # # # # # # # # #
 
-# ---- ズーム関連の設定 ----
-DISPLAY_W, DISPLAY_H = 960, 540  # ウィンドウサイズが取得できない場合のフォールバック値
-ZOOM_LEVELS = [1.0, 1.5, 2.0, 3.0, 4.0]
-# 環境によってはドラッグ/最大化ボタンでのウィンドウリサイズが効かないため、
-# r キーでプログラム側から明示的にウィンドウサイズを切り替えられるようにする
-SIZE_PRESETS = [(960, 540), (1280, 720), (1600, 900), (1920, 1080)]
-size_idx = 0
-zoom_idx = 0
-pan_center = None       # (cx, cy) 元画像座標系。最初のフレーム取得後に初期化
-last_mouse_orig = None  # 直近のマウス位置(元画像座標系)。ズームインの中心に使う
-view_params = (0, 0, 0, 0, DISPLAY_W, DISPLAY_H)  # 現在表示中の切り出し範囲と表示サイズ
-
-
-def get_crop_region(img_w, img_h, zoom_level, center):
-    crop_w = img_w / zoom_level
-    crop_h = img_h / zoom_level
-    cx, cy = center
-    x1 = cx - crop_w / 2
-    y1 = cy - crop_h / 2
-    x1 = max(0, min(x1, img_w - crop_w))
-    y1 = max(0, min(y1, img_h - crop_h))
-    return x1, y1, crop_w, crop_h
-
-
-def get_window_size():
-    """現在のウィンドウの表示サイズを取得する。最大化・手動リサイズにも追従する。"""
-    try:
-        _, _, w, h = cv2.getWindowImageRect('imgLabel')
-        if w > 0 and h > 0:
-            return w, h
-    except Exception:
-        pass
-    return DISPLAY_W, DISPLAY_H
-
-
-def render_display(image):
-    """現在のズーム/パン状態・ウィンドウサイズに応じて、表示用画像を作る。view_paramsも更新する。"""
-    global view_params
-    h, w = image.shape[:2]
-    disp_w, disp_h = get_window_size()
-    x1, y1, crop_w, crop_h = get_crop_region(w, h, ZOOM_LEVELS[zoom_idx], pan_center)
-    view_params = (x1, y1, crop_w, crop_h, disp_w, disp_h)
-    crop = image[int(y1):int(y1 + crop_h), int(x1):int(x1 + crop_w)]
-    display = cv2.resize(crop, (disp_w, disp_h))
-    if zoom_idx > 0:
-        cv2.putText(display, f"zoom x{ZOOM_LEVELS[zoom_idx]:g}  (+/-:zoom 0:reset)",
-                    (10, disp_h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-    return display
-
-
-def display_to_orig(x, y):
-    """表示ウィンドウ上のクリック座標(x, y)を、元動画の座標に変換する。"""
-    x1, y1, crop_w, crop_h, disp_w, disp_h = view_params
-    orig_x = x1 + (x / disp_w) * crop_w
-    orig_y = y1 + (y / disp_h) * crop_h
-    return orig_x, orig_y
-
-
 def ball_label(event, x, y, flags, param):
-    global frame_no, info, image, last_mouse_orig
-
-    orig_x, orig_y = display_to_orig(x, y)
-
-    if event == cv2.EVENT_MOUSEMOVE:
-        last_mouse_orig = (orig_x, orig_y)
-        return
+    global frame_no, info, image
 
     if not frame_no in info:
         print("Frame {} not found in info, creating new entry.".format(frame_no))
@@ -148,8 +85,9 @@ def ball_label(event, x, y, flags, param):
         }
 
     if event == cv2.EVENT_LBUTTONDOWN:
-        info[frame_no]['X'] = orig_x
-        info[frame_no]['Y'] = orig_y
+        h, w, _ = image.shape
+        info[frame_no]['X'] = x
+        info[frame_no]['Y'] = y
         info[frame_no]["Visibility"] = 1
 
     elif event == cv2.EVENT_MBUTTONDOWN:
@@ -157,22 +95,15 @@ def ball_label(event, x, y, flags, param):
         info[frame_no]['Y'] = -1
         info[frame_no]["Visibility"] = 0
 
-
 saved_success = False
 frame_no = 0
 _, image = cap.read()
-_h, _w = image.shape[:2]
-pan_center = (_w / 2, _h / 2)
-last_mouse_orig = pan_center
+
 
 show_image(image, 0, info[0]['X'], info[0]['Y'])
-cv2.namedWindow('imgLabel', cv2.WINDOW_NORMAL)
-cv2.resizeWindow('imgLabel', DISPLAY_W, DISPLAY_H)
-
 while True:
     leave = 'y'
-    display = render_display(image)
-    cv2.imshow('imgLabel', display)
+    cv2.imshow('imgLabel', image)
     cv2.setMouseCallback('imgLabel', ball_label)
     key = cv2.waitKey(1) & 0xFF
     if key == ord('e'):
@@ -250,27 +181,5 @@ while True:
             frame_no -= 36
         image = go2frame(cap, frame_no, info)
         print("Frame No.{}".format(frame_no))
-
-    elif key in (ord('+'), ord('=')):
-        zoom_idx = min(zoom_idx + 1, len(ZOOM_LEVELS) - 1)
-        if last_mouse_orig is not None:
-            pan_center = last_mouse_orig
-        print(f"[ズーム] x{ZOOM_LEVELS[zoom_idx]:g}")
-
-    elif key == ord('-'):
-        zoom_idx = max(zoom_idx - 1, 0)
-        print(f"[ズーム] x{ZOOM_LEVELS[zoom_idx]:g}")
-
-    elif key == ord('0'):
-        zoom_idx = 0
-        pan_center = (_w / 2, _h / 2)
-        print("[ズームリセット]")
-
-    elif key == ord('r'):
-        size_idx = (size_idx + 1) % len(SIZE_PRESETS)
-        w_new, h_new = SIZE_PRESETS[size_idx]
-        cv2.resizeWindow('imgLabel', w_new, h_new)
-        print(f"[ウィンドウサイズ] {w_new}x{h_new}")
-
     else:
         image = go2frame(cap, frame_no, info)
