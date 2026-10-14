@@ -71,12 +71,12 @@ else:
 # # # # # # # # # # # # # # # #
 
 # ---- ズーム関連の設定 ----
-DISPLAY_W, DISPLAY_H = 960, 540
+DISPLAY_W, DISPLAY_H = 960, 540  # ウィンドウサイズが取得できない場合のフォールバック値
 ZOOM_LEVELS = [1.0, 1.5, 2.0, 3.0, 4.0]
 zoom_idx = 0
 pan_center = None       # (cx, cy) 元画像座標系。最初のフレーム取得後に初期化
 last_mouse_orig = None  # 直近のマウス位置(元画像座標系)。ズームインの中心に使う
-view_params = (0, 0, 0, 0)  # 現在表示中の切り出し範囲 (x1, y1, crop_w, crop_h)
+view_params = (0, 0, 0, 0, DISPLAY_W, DISPLAY_H)  # 現在表示中の切り出し範囲と表示サイズ
 
 
 def get_crop_region(img_w, img_h, zoom_level, center):
@@ -90,25 +90,37 @@ def get_crop_region(img_w, img_h, zoom_level, center):
     return x1, y1, crop_w, crop_h
 
 
+def get_window_size():
+    """現在のウィンドウの表示サイズを取得する。最大化・手動リサイズにも追従する。"""
+    try:
+        _, _, w, h = cv2.getWindowImageRect('imgLabel')
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return DISPLAY_W, DISPLAY_H
+
+
 def render_display(image):
-    """現在のズーム/パン状態に応じて、表示用画像を作る。view_paramsも更新する。"""
+    """現在のズーム/パン状態・ウィンドウサイズに応じて、表示用画像を作る。view_paramsも更新する。"""
     global view_params
     h, w = image.shape[:2]
+    disp_w, disp_h = get_window_size()
     x1, y1, crop_w, crop_h = get_crop_region(w, h, ZOOM_LEVELS[zoom_idx], pan_center)
-    view_params = (x1, y1, crop_w, crop_h)
+    view_params = (x1, y1, crop_w, crop_h, disp_w, disp_h)
     crop = image[int(y1):int(y1 + crop_h), int(x1):int(x1 + crop_w)]
-    display = cv2.resize(crop, (DISPLAY_W, DISPLAY_H))
+    display = cv2.resize(crop, (disp_w, disp_h))
     if zoom_idx > 0:
         cv2.putText(display, f"zoom x{ZOOM_LEVELS[zoom_idx]:g}  (+/-:zoom 0:reset)",
-                    (10, DISPLAY_H - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                    (10, disp_h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
     return display
 
 
 def display_to_orig(x, y):
     """表示ウィンドウ上のクリック座標(x, y)を、元動画の座標に変換する。"""
-    x1, y1, crop_w, crop_h = view_params
-    orig_x = x1 + (x / DISPLAY_W) * crop_w
-    orig_y = y1 + (y / DISPLAY_H) * crop_h
+    x1, y1, crop_w, crop_h, disp_w, disp_h = view_params
+    orig_x = x1 + (x / disp_w) * crop_w
+    orig_y = y1 + (y / disp_h) * crop_h
     return orig_x, orig_y
 
 
@@ -149,7 +161,8 @@ pan_center = (_w / 2, _h / 2)
 last_mouse_orig = pan_center
 
 show_image(image, 0, info[0]['X'], info[0]['Y'])
-cv2.namedWindow('imgLabel', cv2.WINDOW_AUTOSIZE)
+cv2.namedWindow('imgLabel', cv2.WINDOW_NORMAL)
+cv2.resizeWindow('imgLabel', DISPLAY_W, DISPLAY_H)
 
 while True:
     leave = 'y'
