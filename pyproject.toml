@@ -69,6 +69,7 @@ dependencies = [
     "tensorboard==2.17.1",
     "tensorboard-data-server==0.7.2",
     "tensorflow==2.17.1",
+    "tensorflow-intel==2.17.1; sys_platform == 'win32'",
     "tensorflow-estimator==2.15.0",
     "tensorflow-io-gcs-filesystem==0.37.1",
     "termcolor==2.4.0",

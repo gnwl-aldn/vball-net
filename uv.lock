@@ -1480,6 +1480,39 @@ wheels = [
 ]
 
 [[package]]
+name = "tensorflow-intel"
+version = "2.17.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "absl-py" },
+    { name = "astunparse" },
+    { name = "flatbuffers" },
+    { name = "gast" },
+    { name = "google-pasta" },
+    { name = "grpcio" },
+    { name = "h5py" },
+    { name = "keras" },
+    { name = "libclang" },
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "opt-einsum" },
+    { name = "packaging" },
+    { name = "protobuf" },
+    { name = "requests" },
+    { name = "setuptools" },
+    { name = "six" },
+    { name = "tensorboard" },
+    { name = "tensorflow-io-gcs-filesystem", marker = "sys_platform == 'never'" },
+    { name = "termcolor" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/ae/60aa6a9120cfe5d26cf8f4dff7248b2fe25798d036d58afecf1da4ff0528/tensorflow_intel-2.17.1-cp311-cp311-win_amd64.whl", hash = "sha256:8abd1fef0e4de4b97b08bfc9efd4e2352afefd9f2f9aa04e0691e67ea5a6e7ac", size = 382251128, upload-time = "2024-10-24T23:28:49.153Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/c0/0e6a6b78883e63d1e215efe27f6df9bc96809bf4768fa2a81654af8622c8/tensorflow_intel-2.17.1-cp312-cp312-win_amd64.whl", hash = "sha256:086b323b207857d163eec40256d13d4eb2a844342dbe73ee35cf8784be82e324", size = 382383602, upload-time = "2024-10-24T23:29:02.661Z" },
+]
+
+[[package]]
 name = "tensorflow-io-gcs-filesystem"
 version = "0.37.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1620,6 +1653,7 @@ dependencies = [
     { name = "tensorboard-data-server" },
     { name = "tensorflow" },
     { name = "tensorflow-estimator" },
+    { name = "tensorflow-intel" },
     { name = "tensorflow-io-gcs-filesystem", marker = "sys_platform == 'never'" },
     { name = "termcolor" },
     { name = "threadpoolctl" },
@@ -1698,6 +1732,7 @@ requires-dist = [
     { name = "tensorboard-data-server", specifier = "==0.7.2" },
     { name = "tensorflow", specifier = "==2.17.1" },
     { name = "tensorflow-estimator", specifier = "==2.15.0" },
+    { name = "tensorflow-intel", specifier = "==2.17.1" },
     { name = "tensorflow-io-gcs-filesystem", specifier = "==0.37.1" },
     { name = "termcolor", specifier = "==2.4.0" },
     { name = "threadpoolctl", specifier = "==3.5.0" },
