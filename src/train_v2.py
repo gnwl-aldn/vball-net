@@ -309,6 +309,7 @@ def main():
                 [p[2] for p in train_pairs],
             )
         )
+        .shuffle(len(train_pairs))
         .map(
             lambda t, c, f: tf.py_function(
                 func=lambda x, y, z: load_data(
