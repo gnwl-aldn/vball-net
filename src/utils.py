@@ -516,7 +516,7 @@ def outcome(y_pred, y_true, tol):
     i = 0
     TP = TN = FP1 = FP2 = FN = 0
     while i < n:
-        for j in range(3):
+        for j in range(y_pred.shape[1]):
             if np.amax(y_pred[i][j]) == 0 and np.amax(y_true[i][j]) == 0:
                 TN += 1
             elif np.amax(y_pred[i][j]) > 0 and np.amax(y_true[i][j]) == 0:
@@ -544,10 +544,10 @@ def outcome(y_pred, y_true, tol):
                     continue
 
                 max_area = rects[max_area_idx][2] * rects[max_area_idx][3]
-                for j in range(len(rects)):
-                    area = rects[j][2] * rects[j][3]
+                for r in range(len(rects)):
+                    area = rects[r][2] * rects[r][3]
                     if area > max_area:
-                        max_area_idx = j
+                        max_area_idx = r
                         max_area = area
                 target = rects[max_area_idx]
                 (cx_pred, cy_pred) = (int(target[0] + target[2] / 2), int(target[1] + target[3] / 2))
@@ -556,10 +556,10 @@ def outcome(y_pred, y_true, tol):
                 rects = [cv2.boundingRect(ctr) for ctr in cnts]
                 max_area_idx = 0
                 max_area = rects[max_area_idx][2] * rects[max_area_idx][3]
-                for j in range(len(rects)):
-                    area = rects[j][2] * rects[j][3]
+                for r in range(len(rects)):
+                    area = rects[r][2] * rects[r][3]
                     if area > max_area:
-                        max_area_idx = j
+                        max_area_idx = r
                         max_area = area
                 target = rects[max_area_idx]
                 (cx_true, cy_true) = (int(target[0] + target[2] / 2), int(target[1] + target[3] / 2))
@@ -590,11 +590,10 @@ class OutcomeMetricsCallback(Callback):
         for batch_frames, batch_heatmaps in self.validation_data:
             # Predict heatmaps
             y_pred = self.model.predict(batch_frames, verbose=0)
-            y_true = batch_heatmaps
+            y_true = batch_heatmaps.numpy()
 
-            # Convert tensors to NumPy arrays and transpose to (batch, height, width, channels)
-            y_pred = np.transpose(y_pred, [0, 2, 3, 1])  # (batch, 288, 512, 3)
-            y_true = np.transpose(y_true, [0, 2, 3, 1])  # (batch, 288, 512, 3)
+            # Binarize predictions heatmaps
+            y_pred = (y_pred > 0.5).astype(np.float32)
 
             # Compute outcome metrics
             TP, TN, FP1, FP2, FN = outcome(y_pred, y_true, self.tol)
