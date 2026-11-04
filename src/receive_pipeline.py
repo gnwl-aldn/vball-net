@@ -11,10 +11,12 @@
   init_box.json  最初に選んだ対象選手の枠 (--init_box で再利用できる)
 
 例:
-  python src/receive_pipeline.py --video /home/fujimiu/volleyball_project/clips/0609_03_rally005.mp4 \
-      --ball_csv out/0609_03_rally005/0609_03_rally005_predict_ball.csv \
-      --out_dir out/0609_03_rally005
+  python src/receive_pipeline.py --video /home/fujimiu/volleyball_project/clips/0609_01_rally009.mp4 \
+      --ball_csv out/0609_01_rally009/0609_01_rally009_predict_ball.csv \
+      --out_dir out/0609_01_rally009
+      --fixes out/0609_01_rally009/fixes.json --contact_frames 320
   → 最初のフレームで対象選手をドラッグで囲んで Enter
+  --fixes を付けると対象選手の選択も自動で入るので、途中で止まらずに処理が進む。 --contact_frames で接触フレームを手動指定することもできる。
 
 姿勢推定・人物検出は YOLO Pose (ultralytics, COCO 17点) を使う。
 骨格番号: 5/6 肩, 7/8 肘, 9/10 手首, 11/12 腰, 13/14 膝, 15/16 足首 (偶数が右)
