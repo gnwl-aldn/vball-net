@@ -2,8 +2,8 @@
 元の推論スクリプトに、ROI(対象コートの範囲)の外の検出を Visibility=0 にする処理を足したもの。
 
 使い方(どちらかでROIを指定。指定しなければROIなしで元と同じ動作):
-  uv run python src/predict_roi.py --video_path clips/0609_03_rally005.mp4 \
-      --model_path models/VballNetFastV1_seq9_grayscale.keras \
+  uv run python src/predict_roi.py --video_path /home/fujimiu/volleyball_project/clips/0609_03_rally005.mp4 \
+      --model_path models/VballNetFastV1_seq9_grayscale/VballNetFastV1_seq9_grayscale_best.keras \
       --output_dir out/0609_03_rally005 --roi_dir roi --threshold 0.35
 
   --roi_dir roi            : 動画名から試合ID(0609_03)を取り出し roi/0609_03.roi.json を自動で使う

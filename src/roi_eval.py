@@ -2,7 +2,7 @@
 正解(TP)をどれだけ失うかを測る。
 
   1) ROIを作る(試合ごとに1回、クリップ1本の最初のフレームで):
-     uv run python src/roi_eval.py make --video clips/0609_03_rally005.mp4 \
+     uv run python src/roi_eval.py make --video /home/fujimiu/volleyball_project/converted/0609_03.mp4 \
          --gt_glob "data/frames/test/0609_03_*_ball.csv" --out roi/0609_03.roi.json
      左クリック=点を追加 / u=1つ戻す / Enter=保存 / q=保存せず終了
      --gt_glob を付けると、その試合の正解ボール位置が黄色い点で出るので、広さの目安になる。

@@ -11,7 +11,7 @@
   init_box.json  最初に選んだ対象選手の枠 (--init_box で再利用できる)
 
 例:
-  python receive_pipeline.py --video clips/0609_03_rally005.mp4 \
+  python src/receive_pipeline.py --video /home/fujimiu/volleyball_project/clips/0609_03_rally005.mp4 \
       --ball_csv out/0609_03_rally005/0609_03_rally005_predict_ball.csv \
       --out_dir out/0609_03_rally005
   → 最初のフレームで対象選手をドラッグで囲んで Enter
@@ -33,7 +33,6 @@
 ・other：ボールが対象選手の手首から遠い（別の選手が触った可能性）
 ・under：上のどちらでもないもの。特徴量を出すのは under だけです。
 ・overlay の動画では、over と other を灰色で「skipped」と表示します。画面下にはフレーム番号も出るようにしました。
-
 """
 import argparse, json, math, os, warnings
 import cv2
@@ -82,6 +81,8 @@ def parse_args():
                     help="前回の fixes.json (手動で選び直した枠)。再実行時に同じ修正を自動で当てる")
     ap.add_argument("--no_interactive", action="store_true", help="乗り移りが疑わしい所で止まらない")
     ap.add_argument("--keep_over", action="store_true", help="オーバーと判定された接触も特徴量を出す")
+    ap.add_argument("--contact_frames", default=None,
+                    help="接触フレームを手動で指定 (カンマ区切り, 例: 320 / 320,410)。自動検出の代わりに使い、アンダーとして扱う")
     return ap.parse_args()
 
 
@@ -564,10 +565,18 @@ def main():
     ball = raw.copy() if a.skip_clean else clean_ball(raw, W)
     print(f"[2] ボール: 生 {int((~np.isnan(raw[:, 0])).sum())} → 整理後 {int((~np.isnan(ball[:, 0])).sum())} フレーム")
 
-    found = detect_contacts(ball, boxes, kps, H, fps, a.kp_conf)
+    if a.contact_frames:   # 手動指定: 人が確認した接触なのでアンダーとして扱う(自動判定は参考に記録)
+        found = [(int(x), "manual") for x in a.contact_frames.split(",")]
+        found = [(f, m) for f, m in found if 0 <= f < T]
+    else:
+        found = detect_contacts(ball, boxes, kps, H, fps, a.kp_conf)
     contacts, info = [], []
     for cf, method in found:
         ct, dist = classify_contact(cf, ball, boxes, kps, a.kp_conf)
+        if method == "manual":
+            if ct != "under":
+                print(f"[3] frame {cf}: 自動判定は {ct} だが、手動指定なので under として扱う")
+            ct = "under"
         contacts.append((cf, method, ct))
         info.append({"clip": clip, "contact_frame": cf, "method": method, "type": ct, "ball_wrist_dist": dist})
     pd.DataFrame(info, columns=["clip", "contact_frame", "method", "type", "ball_wrist_dist"]).to_csv(
