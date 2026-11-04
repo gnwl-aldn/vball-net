@@ -18,6 +18,22 @@
 
 姿勢推定・人物検出は YOLO Pose (ultralytics, COCO 17点) を使う。
 骨格番号: 5/6 肩, 7/8 肘, 9/10 手首, 11/12 腰, 13/14 膝, 15/16 足首 (偶数が右)
+
+
+1. 追跡の乗り移り対策
+・選手の動きを等速と仮定して位置を予測し、その予測と照合するようにしました。2人が交差する場面でも、対象選手を追い続けやすくなっています。
+・乗り移りが起きやすいタイミングでは処理が一時停止し、ウィンドウが開きます。タイミングは「重なりが解けた直後」「急に位置が跳んだとき」「見失ってから再び捉えたとき」の3つです。
+    ・緑の枠が正しい選手なら Enter
+    ・違っていれば r を押して、正しい選手をドラッグで囲み直す
+    ・以降の確認を止めたいときは q
+・選び直した内容は fixes.json に保存されます。次回から --fixes out/.../fixes.json を付ければ、最初の枠も含めて同じ修正が自動で当たり、止まらずに再実行できます。
+
+2. 接触の分類（結果は contacts_all.csv に出力）
+・over：ボールまたは手首が肩より上
+・other：ボールが対象選手の手首から遠い（別の選手が触った可能性）
+・under：上のどちらでもないもの。特徴量を出すのは under だけです。
+・overlay の動画では、over と other を灰色で「skipped」と表示します。画面下にはフレーム番号も出るようにしました。
+
 """
 import argparse, json, math, os, warnings
 import cv2
@@ -62,6 +78,10 @@ def parse_args():
     ap.add_argument("--skip_clean", action="store_true", help="ball_csv が整理済みなら軌道整理をしない")
     ap.add_argument("--model_json", default=None, help="fit_receive_model.py で作った係数ファイル。あれば精度を推定")
     ap.add_argument("--no_video", action="store_true")
+    ap.add_argument("--fixes", default=None,
+                    help="前回の fixes.json (手動で選び直した枠)。再実行時に同じ修正を自動で当てる")
+    ap.add_argument("--no_interactive", action="store_true", help="乗り移りが疑わしい所で止まらない")
+    ap.add_argument("--keep_over", action="store_true", help="オーバーと判定された接触も特徴量を出す")
     return ap.parse_args()
 
 
@@ -97,17 +117,61 @@ def iou(a, b):
     return inter / ua if ua > 0 else 0.0
 
 
-def track_and_pose(video, init_box, model, imgsz, conf):
-    """各フレームで人物+骨格を検出し、前フレームの対象選手と IoU (だめなら中心距離) で対応づける。"""
+def center(b):
+    return np.array([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2])
+
+
+def confirm_target(frame, sel, cands, f, reason):
+    """乗り移りが起きやすいフレームで一時停止して確認する。
+    戻り値: ("ok", None) / ("fix", 新しい枠) / ("quit", None)"""
+    H, W = frame.shape[:2]
+    s = min(1.0, 1280 / W)
+    disp = cv2.resize(frame, (int(W * s), int(H * s)))
+    for bb in cands:
+        cv2.rectangle(disp, (int(bb[0] * s), int(bb[1] * s)), (int(bb[2] * s), int(bb[3] * s)), (160, 160, 160), 1)
+    if sel is not None:
+        cv2.rectangle(disp, (int(sel[0] * s), int(sel[1] * s)), (int(sel[2] * s), int(sel[3] * s)), (0, 255, 0), 3)
+    msg = f"frame {f}: {reason} | Enter/Space=OK  r=reselect  q=stop checking"
+    cv2.rectangle(disp, (0, 0), (disp.shape[1], 34), (0, 0, 0), -1)
+    cv2.putText(disp, msg, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    win = "check target (green = current target)"
+    cv2.imshow(win, disp)
+    while True:
+        key = cv2.waitKey(0) & 0xFF
+        if key in (13, 10, 32):
+            cv2.destroyWindow(win); return "ok", None
+        if key == ord("q"):
+            cv2.destroyWindow(win); return "quit", None
+        if key == ord("r"):
+            cv2.destroyWindow(win)
+            r = cv2.selectROI("reselect target (drag -> Enter)", disp, False, False)
+            cv2.destroyAllWindows()
+            if r[2] > 0 and r[3] > 0:
+                x, y, w, h = [v / s for v in r]
+                return "fix", np.array([x, y, x + w, y + h], float)
+            return "ok", None
+
+
+REASON_EN = {"reacquire": "re-acquired after lost", "jump": "sudden jump",
+             "separated": "players separated after overlap"}
+
+
+def track_and_pose(video, init_box, model, imgsz, conf, fixes=None, interactive=True):
+    """各フレームで人物+骨格を検出し、等速予測した対象選手の枠と IoU・中心距離で対応づける。
+    乗り移りが起きやすいフレーム(重なりが解けた直後 / 急な跳び / 見失い後の再捕捉)では
+    interactive=True なら一時停止して確認・選び直しができる。選び直しは fixes に記録される。"""
+    fixes = dict(fixes or {})
     cap = cv2.VideoCapture(video)
     T = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    boxes, kps = [], []
-    last, lost = init_box.copy(), 0
+    boxes, kps, suspects = [], [], []
+    last, vel, lost = init_box.copy(), np.zeros(4), 0
+    prev_crowd, cooldown = False, 0
     try:
         from tqdm import tqdm
         it = tqdm(total=T, desc="track+pose")
     except ImportError:
         it = None
+    f = 0
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -115,31 +179,63 @@ def track_and_pose(video, init_box, model, imgsz, conf):
         res = model.predict(frame, imgsz=imgsz, conf=conf, classes=[0], verbose=False)[0]
         b = res.boxes.xyxy.cpu().numpy() if res.boxes is not None else np.zeros((0, 4))
         k = res.keypoints.data.cpu().numpy() if (res.keypoints is not None and len(b)) else np.zeros((0, 17, 3))
-        pick = None
+
+        if f in fixes:                       # 手動で指定した枠に合わせ直す
+            last, vel, lost = fixes[f].copy(), np.zeros(4), 0
+        pred = last + vel * (lost + 1)       # 等速で動いたと仮定した今の位置
+        pick, crowd, reason = None, False, None
         if len(b):
-            ious = np.array([iou(last, bb) for bb in b])
-            j = int(np.argmax(ious))
-            if ious[j] >= 0.2:
+            ious = np.array([iou(pred, bb) for bb in b])
+            h = max(pred[3] - pred[1], 1.0)
+            d = np.linalg.norm(np.stack([center(bb) for bb in b]) - center(pred), axis=1) / h
+            score = ious - 0.5 * d
+            order = np.argsort(-score)
+            j = int(order[0])
+            if f in fixes:
+                j = int(np.argmax([iou(fixes[f], bb) for bb in b]))
+                pick = j if iou(fixes[f], b[j]) >= 0.3 else None
+            elif ious[j] >= 0.2 or d[j] < 0.6 + 0.2 * min(lost, 5):
                 pick = j
-            else:  # 見失った/大きく動いたとき: 中心が近い人を選ぶ(見失うほど許容範囲を広げる)
-                h = max(last[3] - last[1], 1.0)
-                c_last = np.array([(last[0] + last[2]) / 2, (last[1] + last[3]) / 2])
-                cs = np.stack([(b[:, 0] + b[:, 2]) / 2, (b[:, 1] + b[:, 3]) / 2], 1)
-                d = np.linalg.norm(cs - c_last, axis=1) / h
-                j2 = int(np.argmin(d))
-                if d[j2] < 0.6 + 0.2 * min(lost, 5):
-                    pick = j2
+            if len(b) > 1:                   # 2番目の候補も近い = 選手が重なっている
+                j2 = int(order[1])
+                crowd = ious[j2] > 0.1 or d[j2] < 0.5
+            if pick is not None and f not in fixes:
+                if lost >= 3:
+                    reason = "reacquire"
+                elif iou(pred, b[pick]) < 0.3:
+                    reason = "jump"
+                elif prev_crowd and not crowd:
+                    reason = "separated"
+
+        if reason:
+            suspects.append((f, reason))
+            if interactive and cooldown == 0:
+                act, nb = confirm_target(frame, b[pick] if pick is not None else None, b, f, REASON_EN[reason])
+                if act == "quit":
+                    interactive = False
+                elif act == "fix":
+                    fixes[f] = nb
+                    j = int(np.argmax([iou(nb, bb) for bb in b])) if len(b) else -1
+                    pick = j if (j >= 0 and iou(nb, b[j]) >= 0.3) else None
+                    if pick is None:
+                        last, vel, lost = nb.copy(), np.zeros(4), 0
+                cooldown = 15
+
         if pick is not None:
-            last = b[pick].astype(float)
-            boxes.append(last.copy()); kps.append(k[pick].astype(float)); lost = 0
+            nbx = b[pick].astype(float)
+            vel = 0.5 * vel + 0.5 * (nbx - last) / (lost + 1)
+            last, lost = nbx, 0
+            boxes.append(nbx.copy()); kps.append(k[pick].astype(float))
         else:
             boxes.append(np.full(4, np.nan)); kps.append(np.full((17, 3), np.nan)); lost += 1
+        prev_crowd, cooldown = crowd, max(0, cooldown - 1)
+        f += 1
         if it: it.update(1)
     if it: it.close()
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
-    return np.array(boxes), np.array(kps), fps, W, H
+    return np.array(boxes), np.array(kps), fps, W, H, fixes, suspects
 
 
 # ================================================================ 2. ボール軌道の整理
@@ -293,6 +389,32 @@ def detect_contacts(ball, boxes, kps, fh, fps, c):
     return contacts
 
 
+def classify_contact(cf, ball, boxes, kps, c, other_dist=0.6):
+    """接触の種類を判定する。
+    other: ボールが対象選手の手首から遠い(身長の other_dist 倍超) → 別の選手が触った可能性
+    over : 手首またはボールが肩より上 → オーバー(記録対象外)
+    under: それ以外 → アンダーハンドレシーブ"""
+    B = Body(kps, boxes, cf, c)
+    if np.isnan(B.h) or np.isnan(ball[cf]).any():
+        return "unknown", np.nan
+    wr = B.wr
+    if np.isnan(wr).any():
+        bx = boxes[cf]
+        wr = np.array([(bx[0] + bx[2]) / 2, bx[1] + 0.6 * (bx[3] - bx[1])])
+    d = float(np.linalg.norm(ball[cf] - wr) / B.h)
+    if not np.isnan(B.sh).any():
+        sh_y = B.sh[1]
+        bx = boxes[cf]
+        w = bx[2] - bx[0] if not np.isnan(bx).any() else B.h * 0.4
+        above = ball[cf, 1] < sh_y or (not np.isnan(B.wr).any() and B.wr[1] < sh_y)
+        # ボールが肩より上で、横方向は選手の幅の範囲内 → オーバー
+        if above and abs(ball[cf, 0] - B.sh[0]) <= w:
+            return "over", d
+    if d > other_dist:
+        return "other", d
+    return "under", d
+
+
 # ================================================================ 4. 特徴量
 def compute_features(cf, ball, boxes, kps, fps, c):
     prep_f = max(0, cf - int(round(0.5 * fps)))
@@ -349,18 +471,20 @@ def evaluate(ft, model):
 
 
 # ================================================================ 出力動画
-def render(video, out_path, boxes, kps, raw, ball, contacts, feats_rows, c):
+def render(video, out_path, boxes, kps, raw, ball, contacts, rows_by_frame, c):
+    """contacts: [(frame, method, ctype)], rows_by_frame: {frame: 特徴量の行} (under のみ)"""
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     wr = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
-    cset = {f: i for i, (f, _) in enumerate(contacts)}
+    cset = {cf: (i, ct) for i, (cf, _, ct) in enumerate(contacts)}
     s = H / 1080
     f, panel = 0, None
     while True:
         ok, img = cap.read()
         if not ok:
             break
+        cv2.putText(img, f"frame {f}", (20, H - int(30 * s)), cv2.FONT_HERSHEY_SIMPLEX, s, (255, 255, 255), 2)
         b = boxes[f] if f < len(boxes) else np.full(4, np.nan)
         if not np.isnan(b).any():
             cv2.rectangle(img, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 255, 0), 2)
@@ -380,11 +504,13 @@ def render(video, out_path, boxes, kps, raw, ball, contacts, feats_rows, c):
                 cv2.circle(img, (int(raw[g, 0]), int(raw[g, 1])), 6, (128, 128, 128), 2)
         near_c = [cf for cf in cset if 0 <= f - cf < int(0.5 * fps)]
         if near_c:
-            cf = near_c[0]; i = cset[cf]
-            cv2.putText(img, f"CONTACT #{i + 1} (frame {cf})", (20, int(110 * s)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2 * s, (0, 0, 255), 3)
-            r = feats_rows[i]
-            panel = [f"receive #{i + 1}",
+            cf = near_c[0]; i, ct = cset[cf]
+            col = (0, 0, 255) if ct == "under" else (128, 128, 128)
+            cv2.putText(img, f"CONTACT #{i + 1} {ct.upper()} (frame {cf})" + ("" if ct == "under" else " - skipped"),
+                        (20, int(110 * s)), cv2.FONT_HERSHEY_SIMPLEX, 1.2 * s, col, 3)
+        if near_c and cf in rows_by_frame:
+            r = rows_by_frame[cf]
+            panel = [f"receive #{i + 1} (underhand)",
                      f"prep knee {r['prep_knee_angle']:.0f} deg  hip h {r['prep_hip_height']:.2f}",
                      f"move hip {r['move_hip_disp']:.2f}  stance {r['move_stance_width']:.2f}",
                      f"ball dx {r['pos_ball_dx']:+.2f}  dy {r['pos_ball_dy']:+.2f}",
@@ -411,42 +537,65 @@ def main():
     cap = cv2.VideoCapture(a.video); ok, first = cap.read(); cap.release()
     if not ok:
         raise SystemExit(f"動画を読めません: {a.video}")
-    init = select_target(first, a.init_box)
+    init_box = a.init_box
+    fixes = {}
+    if a.fixes and os.path.exists(a.fixes):              # 前回の修正を読み込む(初期枠も含む)
+        d = json.load(open(a.fixes))
+        init_box = init_box or d.get("init_box")
+        fixes = {int(k): np.array(v, float) for k, v in d.get("fixes", {}).items()}
+        print(f"[1] 修正ファイル: {a.fixes} (選び直し {len(fixes)} 箇所)")
+    init = select_target(first, init_box)
     x1, y1, x2, y2 = init
-    json.dump({"init_box": f"{x1:.0f},{y1:.0f},{x2 - x1:.0f},{y2 - y1:.0f}"},
-              open(os.path.join(a.out_dir, "init_box.json"), "w"))
-    print(f"[1] 対象選手: --init_box {x1:.0f},{y1:.0f},{x2 - x1:.0f},{y2 - y1:.0f}")
+    init_str = f"{x1:.0f},{y1:.0f},{x2 - x1:.0f},{y2 - y1:.0f}"
+    print(f"[1] 対象選手: --init_box {init_str}")
 
     from ultralytics import YOLO
     model = YOLO(a.pose_model)
-    boxes, kps, fps, W, H = track_and_pose(a.video, init, model, a.imgsz, a.conf)
+    boxes, kps, fps, W, H, fixes, suspects = track_and_pose(
+        a.video, init, model, a.imgsz, a.conf, fixes, interactive=not a.no_interactive)
     T = len(boxes)
+    fx_path = os.path.join(a.out_dir, "fixes.json")
+    json.dump({"init_box": init_str, "fixes": {str(k): [round(float(v), 1) for v in b] for k, b in fixes.items()}},
+              open(fx_path, "w"), indent=1)
     print(f"[1] 追跡: {T}フレーム中 {int((~np.isnan(boxes[:, 0])).sum())} フレームで対象選手を捕捉")
+    print(f"[1] 乗り移り注意フレーム: {[f for f, _ in suspects] or 'なし'}  / 選び直し {len(fixes)} 箇所 → {fx_path}")
 
     raw = load_ball(a.ball_csv, T)
     ball = raw.copy() if a.skip_clean else clean_ball(raw, W)
     print(f"[2] ボール: 生 {int((~np.isnan(raw[:, 0])).sum())} → 整理後 {int((~np.isnan(ball[:, 0])).sum())} フレーム")
 
-    contacts = detect_contacts(ball, boxes, kps, H, fps, a.kp_conf)
-    print(f"[3] 接触フレーム: {[(f, m) for f, m in contacts] or 'なし'}")
+    found = detect_contacts(ball, boxes, kps, H, fps, a.kp_conf)
+    contacts, info = [], []
+    for cf, method in found:
+        ct, dist = classify_contact(cf, ball, boxes, kps, a.kp_conf)
+        contacts.append((cf, method, ct))
+        info.append({"clip": clip, "contact_frame": cf, "method": method, "type": ct, "ball_wrist_dist": dist})
+    pd.DataFrame(info, columns=["clip", "contact_frame", "method", "type", "ball_wrist_dist"]).to_csv(
+        os.path.join(a.out_dir, "contacts_all.csv"), index=False)
+    print(f"[3] 接触フレーム: {[(f, ct) for f, _, ct in contacts] or 'なし'}")
 
     rnos = [int(x) for x in a.receive_no.split(",")] if a.receive_no else []
     mdl = json.load(open(a.model_json)) if a.model_json else None
-    rows = []
-    for i, (cf, method) in enumerate(contacts):
+    rows, rows_by_frame, n = [], {}, 0
+    for cf, method, ct in contacts:
+        if ct != "under" and not (a.keep_over and ct == "over"):
+            continue
         ft = compute_features(cf, ball, boxes, kps, fps, a.kp_conf)
         row = {"clip": clip, "match_id": match, "rally_no": rally,
-               "receive_no": rnos[i] if i < len(rnos) else i + 1,
-               "contact_frame": cf, "contact_method": method, **ft}
+               "receive_no": rnos[n] if n < len(rnos) else n + 1,
+               "contact_frame": cf, "contact_method": method, "contact_type": ct, **ft}
+        n += 1
         if mdl:
             pred, advice, used = evaluate(ft, mdl)
             row["pred_score"], row["advice"] = pred, " / ".join(advice)
-            print(f"[5] 受け#{i + 1}: 推定精度 {pred:.1f}/5 (特徴量{used}個使用)  改善候補: {row['advice'] or '-'}")
-        rows.append(row)
+            print(f"[5] 受け#{n}: 推定精度 {pred:.1f}/5 (特徴量{used}個使用)  改善候補: {row['advice'] or '-'}")
+        rows.append(row); rows_by_frame[cf] = row
         n_ok = sum(not np.isnan(ft[k]) for k in FEATURE_COLS)
-        print(f"[4] 受け#{i + 1} (frame {cf}, {method}): 特徴量 {n_ok}/{len(FEATURE_COLS)} 個算出")
+        print(f"[4] 受け#{n} (frame {cf}, {ct}): 特徴量 {n_ok}/{len(FEATURE_COLS)} 個算出")
+    if not rows:
+        print("[4] アンダーの接触がないので特徴量は出力しません (contacts_all.csv に全接触の判定あり)")
 
-    cols = ["clip", "match_id", "rally_no", "receive_no", "contact_frame", "contact_method"] + FEATURE_COLS
+    cols = ["clip", "match_id", "rally_no", "receive_no", "contact_frame", "contact_method", "contact_type"] + FEATURE_COLS
     if mdl:
         cols += ["pred_score", "advice"]
     pd.DataFrame(rows, columns=cols).to_csv(os.path.join(a.out_dir, "features.csv"), index=False, encoding="utf-8-sig")
@@ -459,7 +608,7 @@ def main():
     tr.to_csv(os.path.join(a.out_dir, "track.csv"), index=False)
 
     if not a.no_video:
-        render(a.video, os.path.join(a.out_dir, "overlay.mp4"), boxes, kps, raw, ball, contacts, rows, a.kp_conf)
+        render(a.video, os.path.join(a.out_dir, "overlay.mp4"), boxes, kps, raw, ball, contacts, rows_by_frame, a.kp_conf)
     print("出力:", a.out_dir)
 
 
