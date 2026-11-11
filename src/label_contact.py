@@ -151,18 +151,29 @@ def main():
     ap.add_argument("--clips_dir", required=True, help="ラリークリップ(mp4)のフォルダ（サブフォルダも探索）")
     ap.add_argument("--out", default="contact_labels.csv")
     ap.add_argument("--start", default=None, help="このクリップ名(stem)から開始")
+    ap.add_argument("--resume", action="store_true",
+                    help="CSVで最後にラベルを付けたクリップから再開")
     args = ap.parse_args()
 
     clips = sorted(Path(args.clips_dir).rglob("*.mp4"))
     if not clips:
         print("mp4 が見つかりません:", args.clips_dir)
         return
+    stems = [c.stem for c in clips]
+    rows = load_labels(args.out)
+
     i = 0
     if args.start:
-        stems = [c.stem for c in clips]
         i = stems.index(args.start) if args.start in stems else 0
+    elif args.resume:
+        labeled = [k for k, v in enumerate(stems) if rows.get(v)]
+        if labeled:
+            i = labeled[-1]
+            n_marks = sum(len(v) for v in rows.values())
+            print(f"再開: {stems[i]} から（ラベル済み {len(labeled)} クリップ / {n_marks} 件）")
+        else:
+            print("ラベル済みのクリップがないので最初から開始します")
 
-    rows = load_labels(args.out)
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
     while 0 <= i < len(clips):
         print(f"--- {i + 1}/{len(clips)}: {clips[i].name}")
