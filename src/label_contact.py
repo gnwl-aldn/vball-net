@@ -7,6 +7,9 @@ u（アンダー）/ o（オーバー）を押し、対象選手を矩形で囲�
 使い方:
   python3 label_contact.py --clips_dir clips/test --out contact_labels.csv
 
+途中から再開したい場合は --resume を付けると、CSVで最後にラベルを付けたクリップから再開する。
+　python3 label_contact.py --clips_dir ~/volleyball_project/clips/test --out contact_labels.csv --resume
+
 キー操作:
   d / a      : 1フレーム進む / 戻る
   w / s      : 10フレーム進む / 戻る
