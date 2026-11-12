@@ -18,6 +18,8 @@ from pathlib import Path
 import cv2
 import mediapipe as mp
 import numpy as np
+from mediapipe.tasks import python as mp_tasks
+from mediapipe.tasks.python import vision
 
 from under_over import classify
 
@@ -31,16 +33,29 @@ def crop_roi(frame, roi, margin):
     return frame[y0:y1, x0:x1]
 
 
+def create_pose(model_path):
+    """MediaPipe Tasks API の PoseLandmarker（静止画モード）を作る"""
+    opts = vision.PoseLandmarkerOptions(
+        base_options=mp_tasks.BaseOptions(model_asset_path=model_path),
+        running_mode=vision.RunningMode.IMAGE,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
+    )
+    return vision.PoseLandmarker.create_from_options(opts)
+
+
 def estimate(pose, crop):
     """クロップ画像 → (33,3) [x_px, y_px, visibility]（クロップ内座標）"""
     if crop.size == 0:
         return None
-    res = pose.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+    rgb = np.ascontiguousarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+    res = pose.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
     if not res.pose_landmarks:
         return None
     ch, cw = crop.shape[:2]
-    return np.array([[p.x * cw, p.y * ch, p.visibility]
-                     for p in res.pose_landmarks.landmark])
+    return np.array([[p.x * cw, p.y * ch,
+                      p.visibility if p.visibility is not None else 1.0]
+                     for p in res.pose_landmarks[0]])
 
 
 def read_window(path, center, window):
@@ -98,14 +113,20 @@ def main():
     ap.add_argument("--vis_thr", type=float, default=0.5)
     ap.add_argument("--out", default="under_over_results.csv")
     ap.add_argument("--sweep", action="store_true", help="しきい値を変えた正解率も表示")
+    ap.add_argument("--model", default="pose_landmarker_heavy.task",
+                    help="PoseLandmarker のモデルファイル(.task)")
     args = ap.parse_args()
+
+    if not Path(args.model).exists():
+        print(f"モデルファイルがありません: {args.model}\n"
+              "README の wget コマンドでダウンロードしてください")
+        return
 
     clip_paths = {p.stem: p for p in Path(args.clips_dir).rglob("*.mp4")}
     with open(args.labels, newline="", encoding="utf-8") as f:
         labels = list(csv.DictReader(f))
 
-    pose = mp.solutions.pose.Pose(static_image_mode=True, model_complexity=2,
-                                  min_detection_confidence=0.5)
+    pose = create_pose(args.model)
     results = []
     for i, lab in enumerate(labels, 1):
         clip = lab["clip"]
@@ -126,6 +147,10 @@ def main():
         print(f"[{i}/{len(labels)}] {clip} #{lab['receive_no']}: "
               f"正解={lab['receive_type']} 予測={res['label']} h={res['wrist_height']:.2f}")
     pose.close()
+
+    if not results:
+        print("評価できたデータがありません。--clips_dir のパスとクリップ名を確認してください")
+        return
 
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
