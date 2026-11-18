@@ -23,7 +23,7 @@ import numpy as np
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
-from under_over import classify
+from under_over import FEATURE_KEYS, classify
 
 
 def crop_roi(frame, roi, margin, min_h=0, mask_pad=None):
@@ -263,8 +263,7 @@ def main():
         results.append({
             "clip": clip, "receive_no": lab["receive_no"], "contact_frame": cf,
             "true": lab["receive_type"], "pred": res["label"], "reason": res["reason"],
-            "wrist_height": res["wrist_height"], "wrist_gap": res["wrist_gap"],
-            "elbow_angle": res["elbow_angle"], "n_frames": res["n_frames"],
+            **{k: res[k] for k in FEATURE_KEYS}, "n_frames": res["n_frames"],
             "n_pose": res["n_pose"], "n_window": len(frames),
             "n_roi_scale": res["n_roi_scale"], "roi_h": roi[3],
         })
@@ -322,12 +321,22 @@ def main():
     print(f"\n腰が見えずROI基準長を使ったレシーブ: {n_roi}/{len(results)}")
 
     # クラスごとの肘角度（次の特徴量候補）
-    print("\n=== elbow_angle の分布（180°に近いほど腕が伸びている）===")
-    for c in ("under", "over"):
-        v = np.array([r["elbow_angle"] for r in results
-                      if r["true"] == c and not np.isnan(r["elbow_angle"])])
-        if len(v):
-            print(f"  {c:>5}: n={len(v)} 平均 {v.mean():.0f}° 中央値 {np.median(v):.0f}°")
+    # 特徴量ごとの中央値: 「誤ってオーバーと判定されたアンダー」が
+    # 本物のオーバーとどの特徴量で区別できそうかを見る
+    groups = {
+        "アンダー(正解)": [r for r in results if r["true"] == "under" and r["pred"] == "under"],
+        "アンダー→over誤判定": [r for r in results if r["true"] == "under" and r["pred"] == "over"],
+        "オーバー(全体)": [r for r in results if r["true"] == "over" and r["pred"] != "unknown"],
+    }
+    print("\n=== 特徴量の中央値（誤判定アンダーとオーバーで差が大きい特徴量が有望）===")
+    print(f"{'':>22}" + "".join(f"{g:>16}" for g in groups))
+    for k in FEATURE_KEYS:
+        vals = []
+        for rows in groups.values():
+            v = [r[k] for r in rows if not np.isnan(r[k])]
+            vals.append(f"{np.median(v):>+16.2f}" if v else f"{'-':>16}")
+        print(f"{k:>22}" + "".join(vals))
+    print("  ※ shoulder_angle/elbow_angle は度、その他は体幹長で正規化した値")
 
     # クラスごとの wrist_height の分布（論文の図・しきい値の根拠に使える）
     print("\n=== wrist_height の分布 ===")

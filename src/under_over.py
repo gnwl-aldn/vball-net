@@ -18,6 +18,7 @@ from collections import Counter
 
 import numpy as np
 
+NOSE = 0
 L_SH, R_SH = 11, 12
 L_EL, R_EL = 13, 14
 L_WR, R_WR = 15, 16
@@ -73,8 +74,25 @@ def frame_features(lm, vis_thr=0.3, fallback_len=None):
     angles = [a for a in (_elbow_angle(lm, L_SH, L_EL, L_WR, vis_thr),
                           _elbow_angle(lm, R_SH, R_EL, R_WR, vis_thr)) if a is not None]
 
+    # 体幹の向き（腰→肩）。前傾しても「体にとっての上」を基準にできる
+    if hip is not None and np.linalg.norm(sh - hip) > 1e-6:
+        up = (sh - hip) / np.linalg.norm(sh - hip)
+    else:
+        up = np.array([0.0, -1.0])           # 腰が見えなければ画面の上方向
+    # 体幹軸に沿った手首の高さ（正=肩より頭側）
+    wrist_height_torso = float(np.dot(wr - sh, up) / scale)
+    # 肩の角度（体幹と上腕のなす角。0°=腕が体の横に下がる, 180°=真上に上げる）
+    sh_angles = [a for a in (_elbow_angle(lm, L_HIP, L_SH, L_EL, vis_thr),
+                             _elbow_angle(lm, R_HIP, R_SH, R_EL, vis_thr)) if a is not None]
+    # 鼻を基準にした手首の高さ（体幹軸方向、正=手首が鼻より頭側）
+    wrist_nose = (float(np.dot(wr - lm[NOSE, :2], up) / scale)
+                  if lm[NOSE, 2] >= vis_thr else np.nan)
+
     return {
         "wrist_height": (sh[1] - wr[1]) / scale,
+        "wrist_height_torso": wrist_height_torso,
+        "wrist_nose": wrist_nose,
+        "shoulder_angle": float(np.mean(sh_angles)) if sh_angles else np.nan,
         "wrist_gap": wrist_gap,
         "elbow_angle": float(np.mean(angles)) if angles else np.nan,
         "scale_src": scale_src,
@@ -103,14 +121,17 @@ def classify(lm_seq, thr=0.0, vis_thr=0.3, min_frames=2, fallback_len=None):
     if len(feats) < min_frames:
         fails = {k: v for k, v in reasons.items() if k != "ok"}
         reason = max(fails, key=fails.get) if fails else "few_frames"
-        return {"label": "unknown", "wrist_height": np.nan, "wrist_gap": np.nan,
-                "elbow_angle": np.nan, "reason": reason, **base}
+        return {"label": "unknown", **{k: np.nan for k in FEATURE_KEYS},
+                "reason": reason, **base}
 
     def med(key):
         v = [f[key] for f in feats if not np.isnan(f[key])]
         return float(np.median(v)) if v else np.nan
 
-    h = med("wrist_height")
-    return {"label": "over" if h > thr else "under", "wrist_height": h,
-            "wrist_gap": med("wrist_gap"), "elbow_angle": med("elbow_angle"),
-            "reason": "ok", **base}
+    out = {k: med(k) for k in FEATURE_KEYS}
+    h = out["wrist_height"]
+    return {"label": "over" if h > thr else "under", **out, "reason": "ok", **base}
+
+
+FEATURE_KEYS = ["wrist_height", "wrist_height_torso", "wrist_nose",
+                "shoulder_angle", "wrist_gap", "elbow_angle"]
