@@ -183,13 +183,22 @@ def report(results, thr):
 
 
 def append_run_log(path, row):
-    """実行ごとの設定と結果を1行ずつ追記する（ファイルがなければヘッダーも書く）"""
-    new = not path.exists()
-    with open(path, "a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(row.keys()))
-        if new:
-            w.writeheader()
-        w.writerow(row)
+    """実行ごとの設定と結果を1行ずつ追記する。
+    列が増えた場合はヘッダーを付け直して全体を書き直す（列ずれを防ぐ）。"""
+    rows, fields = [], []
+    if path.exists():
+        with open(path, newline="", encoding="utf-8") as f:
+            r = csv.DictReader(f)
+            fields = list(r.fieldnames or [])
+            rows = list(r)
+    for k in row:
+        if k not in fields:
+            fields.append(k)
+    rows.append(row)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields, restval="")
+        w.writeheader()
+        w.writerows(rows)
 
 
 def main():
