@@ -135,3 +135,17 @@ def classify(lm_seq, thr=0.0, vis_thr=0.3, min_frames=2, fallback_len=None):
 
 FEATURE_KEYS = ["wrist_height", "wrist_height_torso", "wrist_nose",
                 "shoulder_angle", "wrist_gap", "elbow_angle"]
+
+
+def is_analyzable_under(res, a=0.0, T=None):
+    """classify() の結果から「分析に使うアンダー」かを判定する（receive_pipeline.py 用）。
+    a, T は tune_under_over.py が results/under_rule.json に保存した値を使う。
+      手首の高さ <= a かつ 肘の角度 >= T（肘が取れないときは手首の条件だけ）→ True
+      それ以外（オーバー、判断できないもの、unknown）→ False（分析から除外）"""
+    if res["label"] == "unknown" or np.isnan(res["wrist_height"]):
+        return False
+    if res["wrist_height"] > a:
+        return False
+    if T is not None and not np.isnan(res["elbow_angle"]) and res["elbow_angle"] < T:
+        return False
+    return True
