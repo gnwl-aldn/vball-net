@@ -24,13 +24,39 @@ from mediapipe.tasks.python import vision
 from under_over import classify
 
 
-def crop_roi(frame, roi, margin):
+def crop_roi(frame, roi, margin, min_h=0):
+    """ROIを margin だけ広げて切り出し、高さが min_h 未満なら拡大する。
+    戻り値: (crop, 拡大率)"""
     H, W = frame.shape[:2]
     x, y, w, h = roi
     mx, my = int(w * margin), int(h * margin)
     x0, y0 = max(x - mx, 0), max(y - my, 0)
     x1, y1 = min(x + w + mx, W), min(y + h + my, H)
-    return frame[y0:y1, x0:x1]
+    crop = frame[y0:y1, x0:x1]
+    s = 1.0
+    if min_h and 0 < crop.shape[0] < min_h:
+        s = min_h / crop.shape[0]
+        crop = cv2.resize(crop, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+    return crop, s
+
+
+DRAW_IDS = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26]
+DRAW_EDGES = [(11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+              (11, 23), (12, 24), (23, 24), (23, 25), (24, 26)]
+
+
+def save_debug(path, crop, lm, vis_thr, text):
+    """骨格を描いたクロップ画像を保存（緑=visible, 赤=visibility低）"""
+    img = crop.copy()
+    if lm is not None:
+        for a, b in DRAW_EDGES:
+            cv2.line(img, tuple(int(v) for v in lm[a, :2]),
+                     tuple(int(v) for v in lm[b, :2]), (200, 200, 200), 1)
+        for i in DRAW_IDS:
+            c = (0, 220, 0) if lm[i, 2] >= vis_thr else (0, 0, 255)
+            cv2.circle(img, tuple(int(v) for v in lm[i, :2]), 4, c, -1)
+    cv2.putText(img, text, (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+    cv2.imwrite(str(path), img)
 
 
 def create_pose(model_path):
@@ -70,7 +96,7 @@ def read_window(path, center, window):
             break
         frames.append(fr)
     cap.release()
-    return frames
+    return frames, start
 
 
 def report(results, thr):
@@ -108,9 +134,15 @@ def main():
     ap.add_argument("--labels", default="contact_labels.csv")
     ap.add_argument("--clips_dir", required=True)
     ap.add_argument("--window", type=int, default=5, help="接触フレーム前後に見るフレーム数")
-    ap.add_argument("--margin", type=float, default=0.3, help="ROIを広げる割合")
+    ap.add_argument("--margin", type=float, default=0.5, help="ROIを広げる割合")
     ap.add_argument("--thr", type=float, default=0.0)
-    ap.add_argument("--vis_thr", type=float, default=0.5)
+    ap.add_argument("--vis_thr", type=float, default=0.3)
+    ap.add_argument("--min_h", type=int, default=384,
+                    help="クロップの高さがこれ未満なら拡大してから推定（0で無効）")
+    ap.add_argument("--torso_ratio", type=float, default=0.3,
+                    help="腰が見えないとき 基準長 = ROI高さ×この値（0で無効＝腰必須）")
+    ap.add_argument("--debug_dir", default=None,
+                    help="unknown・誤判定の接触フレーム画像（骨格つき）を保存するフォルダ")
     ap.add_argument("--out", default="under_over_results.csv")
     ap.add_argument("--sweep", action="store_true", help="しきい値を変えた正解率も表示")
     ap.add_argument("--model", default="pose_landmarker_heavy.task",
@@ -126,6 +158,9 @@ def main():
     with open(args.labels, newline="", encoding="utf-8") as f:
         labels = list(csv.DictReader(f))
 
+    if args.debug_dir:
+        Path(args.debug_dir).mkdir(parents=True, exist_ok=True)
+
     pose = create_pose(args.model)
     results = []
     for i, lab in enumerate(labels, 1):
@@ -135,17 +170,33 @@ def main():
             continue
         cf = int(lab["contact_frame"])
         roi = tuple(int(lab[k]) for k in ("roi_x", "roi_y", "roi_w", "roi_h"))
-        frames = read_window(clip_paths[clip], cf, args.window)
-        lm_seq = [estimate(pose, crop_roi(fr, roi, args.margin)) for fr in frames]
-        res = classify(lm_seq, thr=args.thr, vis_thr=args.vis_thr)
+        frames, start = read_window(clip_paths[clip], cf, args.window)
+
+        crops, lm_seq = [], []
+        for fr in frames:
+            crop, s = crop_roi(fr, roi, args.margin, args.min_h)
+            crops.append(crop)
+            lm_seq.append(estimate(pose, crop))
+        fallback = roi[3] * s * args.torso_ratio if args.torso_ratio > 0 else None
+        res = classify(lm_seq, thr=args.thr, vis_thr=args.vis_thr, fallback_len=fallback)
+
         results.append({
             "clip": clip, "receive_no": lab["receive_no"], "contact_frame": cf,
-            "true": lab["receive_type"], "pred": res["label"],
+            "true": lab["receive_type"], "pred": res["label"], "reason": res["reason"],
             "wrist_height": res["wrist_height"], "wrist_gap": res["wrist_gap"],
-            "n_frames": res["n_frames"],
+            "elbow_angle": res["elbow_angle"], "n_frames": res["n_frames"],
+            "n_pose": res["n_pose"], "n_window": len(frames),
+            "n_roi_scale": res["n_roi_scale"], "roi_h": roi[3],
         })
         print(f"[{i}/{len(labels)}] {clip} #{lab['receive_no']}: "
-              f"正解={lab['receive_type']} 予測={res['label']} h={res['wrist_height']:.2f}")
+              f"正解={lab['receive_type']} 予測={res['label']} "
+              f"h={res['wrist_height']:.2f} ({res['reason']})")
+
+        if args.debug_dir and res["label"] != lab["receive_type"] and frames:
+            k = min(max(cf - start, 0), len(frames) - 1)
+            name = f"{res['label']}_{lab['receive_type']}_{clip}_{lab['receive_no']}.jpg"
+            save_debug(Path(args.debug_dir) / name, crops[k], lm_seq[k], args.vis_thr,
+                       f"true={lab['receive_type']} pred={res['label']} {res['reason']}")
     pose.close()
 
     if not results:
@@ -159,6 +210,29 @@ def main():
     print("\n結果を保存:", args.out)
 
     report(results, args.thr)
+
+    # unknown の原因の内訳
+    unk = [r for r in results if r["pred"] == "unknown"]
+    if unk:
+        print("\n=== unknown の原因 ===")
+        print("  no_pose=骨格が検出されない / no_wrist・no_shoulder=関節のvisibilityが低い")
+        for why in sorted({r["reason"] for r in unk}):
+            sub = [r for r in unk if r["reason"] == why]
+            print(f"  {why:>12}: {len(sub):>3}件  (under {sum(r['true'] == 'under' for r in sub)}"
+                  f" / over {sum(r['true'] == 'over' for r in sub)})")
+        roi_unk = np.median([r["roi_h"] for r in unk])
+        roi_ok = np.median([r["roi_h"] for r in results if r["pred"] != "unknown"] or [np.nan])
+        print(f"  ROI高さの中央値: unknown {roi_unk:.0f}px / 判定できたもの {roi_ok:.0f}px")
+    n_roi = sum(r["n_roi_scale"] > 0 for r in results)
+    print(f"\n腰が見えずROI基準長を使ったレシーブ: {n_roi}/{len(results)}")
+
+    # クラスごとの肘角度（次の特徴量候補）
+    print("\n=== elbow_angle の分布（180°に近いほど腕が伸びている）===")
+    for c in ("under", "over"):
+        v = np.array([r["elbow_angle"] for r in results
+                      if r["true"] == c and not np.isnan(r["elbow_angle"])])
+        if len(v):
+            print(f"  {c:>5}: n={len(v)} 平均 {v.mean():.0f}° 中央値 {np.median(v):.0f}°")
 
     # クラスごとの wrist_height の分布（論文の図・しきい値の根拠に使える）
     print("\n=== wrist_height の分布 ===")
