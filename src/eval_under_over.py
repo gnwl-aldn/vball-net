@@ -9,10 +9,12 @@ MediaPipe Pose で姿勢推定し、under_over.classify() の判定と正解を�
 
 使い方:
   python3 eval_under_over.py --labels contact_labels.csv --clips_dir clips/test \
-      --window 5 --thr 0.0 --out under_over_results.csv --sweep
+      --sweep --tag baseline
+  → results/under_over_<日時>_<tag>.csv（詳細）と results/runs_log.csv（実行ごとの要約を追記）
 """
 import argparse
 import csv
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -120,6 +122,8 @@ def report(results, thr):
     unk = total - known
     print(f"\n正解率（判定できたもの）: {correct}/{known} = {correct / max(known, 1):.3f}")
     print(f"判定不能(unknown): {unk}/{total}")
+    metrics = {"n_total": total, "n_known": known, "n_unknown": unk,
+               "accuracy": round(correct / max(known, 1), 4)}
     for c in classes:
         tp = cm[c][c]
         pred_c = sum(cm[t][c] for t in classes)
@@ -127,6 +131,22 @@ def report(results, thr):
         prec = tp / pred_c if pred_c else float("nan")
         rec = tp / true_c if true_c else float("nan")
         print(f"  {c:>5}: 適合率 {prec:.3f}  再現率 {rec:.3f}  (正解数 {true_c})")
+        metrics[f"{c}_precision"] = round(prec, 4)
+        metrics[f"{c}_recall"] = round(rec, 4)
+    for t in classes:
+        for p in preds:
+            metrics[f"cm_{t}_{p}"] = cm[t][p]
+    return metrics
+
+
+def append_run_log(path, row):
+    """実行ごとの設定と結果を1行ずつ追記する（ファイルがなければヘッダーも書く）"""
+    new = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if new:
+            w.writeheader()
+        w.writerow(row)
 
 
 def main():
@@ -143,7 +163,10 @@ def main():
                     help="腰が見えないとき 基準長 = ROI高さ×この値（0で無効＝腰必須）")
     ap.add_argument("--debug_dir", default=None,
                     help="unknown・誤判定の接触フレーム画像（骨格つき）を保存するフォルダ")
-    ap.add_argument("--out", default="under_over_results.csv")
+    ap.add_argument("--out_dir", default="results",
+                    help="結果の保存先フォルダ。実行ごとに日時つきのCSVを作り、runs_log.csv に1行追記")
+    ap.add_argument("--tag", default="", help="実行のメモ（ファイル名とログに残る。例: elbow追加）")
+    ap.add_argument("--out", default=None, help="詳細CSVのファイル名を直接指定したいとき")
     ap.add_argument("--sweep", action="store_true", help="しきい値を変えた正解率も表示")
     ap.add_argument("--model", default="pose_landmarker_heavy.task",
                     help="PoseLandmarker のモデルファイル(.task)")
@@ -203,13 +226,26 @@ def main():
         print("評価できたデータがありません。--clips_dir のパスとクリップ名を確認してください")
         return
 
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tag = f"_{args.tag}" if args.tag else ""
+    out_path = Path(args.out) if args.out else out_dir / f"under_over_{ts}{tag}.csv"
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
         w.writeheader()
         w.writerows(results)
-    print("\n結果を保存:", args.out)
+    print("\n結果を保存:", out_path)
 
-    report(results, args.thr)
+    metrics = report(results, args.thr)
+    log_path = out_dir / "runs_log.csv"
+    append_run_log(log_path, {
+        "timestamp": ts, "tag": args.tag, "labels": args.labels,
+        "thr": args.thr, "vis_thr": args.vis_thr, "margin": args.margin,
+        "min_h": args.min_h, "torso_ratio": args.torso_ratio, "window": args.window,
+        **metrics, "result_file": str(out_path),
+    })
+    print("実行ログに追記:", log_path)
 
     # unknown の原因の内訳
     unk = [r for r in results if r["pred"] == "unknown"]
