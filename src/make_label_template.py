@@ -83,7 +83,7 @@ def main():
 
     out = Path(args.out)
     if out.exists():
-        old = pd.read_csv(out, dtype=str).fillna("")
+        old = pd.read_csv(out, dtype=str, encoding="utf-8-sig").fillna("")
         key = ["clip", "contact_idx"]
         new["contact_idx"] = new["contact_idx"].astype(str)
         merged = new.merge(old[key + ["court_side", "receive_type"]], on=key, how="left", suffixes=("_new", ""))

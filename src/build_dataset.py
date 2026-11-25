@@ -133,7 +133,7 @@ def main():
     ap.add_argument("--out", default="uo_dataset.npz")
     args = ap.parse_args()
 
-    lab = pd.read_csv(args.labels, dtype=str).fillna("")
+    lab = pd.read_csv(args.labels, dtype=str, encoding="utf-8-sig").fillna("")
     lab["receive_type"] = lab["receive_type"].str.strip().str.lower()
     lab = lab[lab["receive_type"].isin(["under", "over"])].copy()
     if lab.empty:
